@@ -14,6 +14,10 @@ type WebSocketEvents = {
   message: [MessageEvent];
 };
 
+// Class adapted from 'ryo-ma/deno-websocket/lib/websocket.ts' to permit
+// protocol string and emitting of type-safe events.
+// https://github.com/ryo-ma/deno-websocket/blob/b10568e250f214a4b96871424e74989181088a6d/lib/websocket.ts
+
 export class WebSocketClient extends EventEmitter<WebSocketEvents> {
   webSocket: WebSocket;
 
