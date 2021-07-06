@@ -22,6 +22,8 @@ interface Options {
   logLevel: LevelName;
   output?: string;
   query?: string[];
+  silent: boolean;
+  timeout?: number;
 }
 
 const cmd = (new Command<Options>())
@@ -43,6 +45,15 @@ const cmd = (new Command<Options>())
   .option(
     "-o, --output <path:path-ensure>",
     "File path to write captured output",
+  )
+  .option(
+    "--silent [silent:boolean]",
+    "Disable logging to the console.",
+    { default: false },
+  )
+  .option(
+    "-t, --timeout <timeout:integer>",
+    "Duration in seconds to collect output.",
   )
   .env(
     "GRAPH_API_KEY=<value:string>",
@@ -70,19 +81,30 @@ async function shutdownHandler(
     console.error("Gracefully stopping running tasks.");
     controller.abort();
     await done;
-    console.error("Shutdown complete.");
   };
 
-  await interrupt;
-  await Promise.race([immediate(), graceful()]);
+  const handler = async () => {
+    await interrupt;
+    await Promise.race([immediate(), graceful()]);
+  };
+
+  await Promise.race([done, handler()]);
+  console.error("Shutdown complete.");
   interrupt.dispose();
 }
 
-async function main(options: Options) {
+async function main({ logLevel, output, silent, query, timeout }: Options) {
   const GRAPH_API_KEY = Deno.env.get("GRAPH_API_KEY");
   const GRAPH_ENDPOINT_URL = Deno.env.get("GRAPH_ENDPOINT_URL");
 
-  await setLogger(options.logLevel, { filename: options.output });
+  await setLogger(
+    logLevel,
+    {
+      filename: output,
+      silent,
+    },
+  );
+
   const appLog = getLogger("app");
   const evtLog = getLogger("events");
   const controller = new AbortController();
@@ -108,10 +130,10 @@ async function main(options: Options) {
 
   await client.connect();
 
-  for (const query of options.query ?? []) {
+  for (const q of query ?? []) {
     (async () => {
-      const sub = await client.subscribe({ query });
-      const hash = createHash("md5").update(query).toString();
+      const sub = await client.subscribe({ query: q });
+      const hash = createHash("md5").update(q).toString();
       evtLog.debug(`Starting subscription: ${hash}`);
 
       for await (const evt of sub) {
@@ -120,6 +142,13 @@ async function main(options: Options) {
 
       evtLog.debug(`Stopping subscription: ${hash}`);
     })();
+  }
+
+  if (timeout !== undefined) {
+    setTimeout(() => {
+      console.log("Timeout reached; shutting down.");
+      controller.abort();
+    }, timeout * 1000);
   }
 
   await shutdownHandler(controller, client.done);

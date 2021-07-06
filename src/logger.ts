@@ -18,6 +18,7 @@ interface BaseOptions {
 
 type ConsoleOptions = Partial<BaseOptions>;
 type FileOptions = ConsoleOptions & { filename: string };
+type Options = Partial<FileOptions> & { silent?: boolean };
 
 function isObject(item: any): item is Object {
   return typeof item === "object" && item !== null;
@@ -75,12 +76,17 @@ class OutputFileHandler extends FileHandler {
 
 export function setLogger(
   levelName: LevelName,
-  options?: Partial<FileOptions>,
+  { silent, ...options }: Options = {},
 ) {
-  let handlers: Record<string, BaseHandler> = {
-    stdOut: new StdOutHandler(levelName, options ?? {}),
-    stdErr: new StdErrorHandler(levelName, options ?? {}),
-  };
+  let handlers: Record<string, BaseHandler> = {};
+
+  if (silent != true) {
+    handlers = {
+      ...handlers,
+      stdOut: new StdOutHandler(levelName, options),
+      stdErr: new StdErrorHandler(levelName, options),
+    };
+  }
 
   if (isFileOptions(options)) {
     handlers = {
