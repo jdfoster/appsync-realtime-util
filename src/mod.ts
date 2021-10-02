@@ -5,6 +5,7 @@ import {
   Command,
   EnumType,
   ITypeInfo,
+  ValidationError,
 } from "https://deno.land/x/cliffy@v0.19.2/mod.ts";
 import { allowedLevels, getLogger, LevelName, setLogger } from "./logger.ts";
 import { AppSyncWebSocket } from "./appsync_ws.ts";
@@ -24,6 +25,7 @@ interface Options {
   query?: string[];
   silent: boolean;
   timeout?: number;
+  header?: Record<string, string>[];
 }
 
 const cmd = (new Command<Options>())
@@ -31,7 +33,7 @@ const cmd = (new Command<Options>())
   .type("path-ensure", pathEnsureType)
   .option(
     "-q, --query <query:string>",
-    "Subscription query to request.",
+    "Subscription query(ies) to request.",
     { collect: true },
   )
   .option(
@@ -55,6 +57,28 @@ const cmd = (new Command<Options>())
     "-t, --timeout <timeout:integer>",
     "Duration in seconds to collect output.",
   )
+  .option(
+    "--header <header:string>",
+    "Header(s) to be forwarded to server with query(ies); colon separated key/value pairs.",
+    {
+      collect: true,
+      value: (
+        current: string,
+        previous: Record<string, string>[] = [],
+      ): Record<string, string>[] => {
+        const header = current.split(":", 2);
+
+        if (header.length !== 2) {
+          throw new ValidationError(
+            `Header must be a colon (":") separate string, but got "${current}".`,
+            { exitCode: 1 },
+          );
+        }
+
+        return [...previous, { [header[0]]: header[1] }];
+      },
+    },
+  )
   .env(
     "GRAPH_API_KEY=<value:string>",
     "AWS AppSync Api Key to be passed to the server.",
@@ -68,7 +92,7 @@ async function shutdownHandler(
   controller: AbortController,
   done: Promise<void>,
 ) {
-  const interrupt = Deno.signal(Deno.Signal.SIGINT);
+  const interrupt = Deno.signal("SIGINT");
 
   const immediate = async () => {
     console.error("To halt immediately press '^C' again.");
@@ -93,9 +117,12 @@ async function shutdownHandler(
   interrupt.dispose();
 }
 
-async function main({ logLevel, output, silent, query, timeout }: Options) {
+async function main(
+  { logLevel, output, silent, query, timeout, header }: Options,
+) {
   const GRAPH_API_KEY = Deno.env.get("GRAPH_API_KEY");
   const GRAPH_ENDPOINT_URL = Deno.env.get("GRAPH_ENDPOINT_URL");
+  const headers = header?.reduce((prev, curr) => ({ ...prev, ...curr }), {});
 
   await setLogger(
     logLevel,
@@ -132,15 +159,26 @@ async function main({ logLevel, output, silent, query, timeout }: Options) {
 
   for (const q of query ?? []) {
     (async () => {
-      const sub = await client.subscribe({ query: q });
-      const hash = createHash("md5").update(q).toString();
-      evtLog.debug(`Starting subscription: ${hash}`);
+      try {
+        if (controller.signal.aborted) return;
+        const sub = await client.subscribe({ query: q, headers });
+        const hash = createHash("md5").update(q).toString();
+        evtLog.debug(`Starting subscription: ${hash}`);
 
-      for await (const evt of sub) {
-        evtLog.info(evt, { direction: "inbound", hash });
+        for await (const evt of sub) {
+          evtLog.info(evt, { direction: "inbound", hash });
+        }
+
+        evtLog.debug(`Stopping subscription: ${hash}`);
+      } catch (err) {
+        evtLog.error(err);
+
+        // delay abort signal to permit recording of event log.
+        setTimeout(() => {
+          console.error("Encountered an error; shutting down.");
+          controller.abort();
+        }, 200);
       }
-
-      evtLog.debug(`Stopping subscription: ${hash}`);
     })();
   }
 

@@ -44,12 +44,14 @@ interface Options {
   endpoint: string | URL;
   auth: AuthApiKey;
   abortController?: AbortController;
+  headers?: Record<string, string>;
 }
 
 interface SubscriptionOptions {
   id?: string;
   query: string;
   variables?: Record<string, any>;
+  headers?: Record<string, string>;
 }
 
 interface SubmitRequestOptions {
@@ -78,14 +80,16 @@ export class AppSyncWebSocket extends EventEmitter<EventMap & { end: [] }> {
   private keepAliveTimeoutId: number | undefined;
   private controller: AbortController;
   private subscriptions: Set<string> = new Set();
+  private connectionHeaders: Record<string, string>;
   private _done = deferred<void>();
   signal: AbortSignal;
 
-  constructor({ endpoint, auth, abortController: abort }: Options) {
+  constructor({ endpoint, auth, abortController: abort, headers }: Options) {
     super();
     this.auth = auth;
     this.endpoint = endpoint instanceof URL ? endpoint : new URL(endpoint);
     this.controller = abort !== undefined ? abort : new AbortController();
+    this.connectionHeaders = headers ?? {};
     this.signal = this.controller.signal;
     this.signal.addEventListener("abort", this.abort.bind(this));
   }
@@ -126,7 +130,7 @@ export class AppSyncWebSocket extends EventEmitter<EventMap & { end: [] }> {
     await this.waitForConnection();
   }
 
-  private buildHeaders() {
+  private buildAuthHeaders() {
     if (this.auth.kind == "api_key") {
       const dt = new Date();
       const dtStr = dt.toISOString().replace(/[:\-]|\.\d{3}/g, "");
@@ -152,7 +156,15 @@ export class AppSyncWebSocket extends EventEmitter<EventMap & { end: [] }> {
     const addr = new URL(host);
     addr.protocol = this.endpoint.protocol === "https:" ? "wss:" : "ws:";
     addr.searchParams.set("payload", btoa(JSON.stringify(payload)));
-    addr.searchParams.set("header", btoa(JSON.stringify(this.buildHeaders())));
+    addr.searchParams.set(
+      "header",
+      btoa(
+        JSON.stringify({
+          ...this.buildAuthHeaders(),
+          ...this.connectionHeaders,
+        }),
+      ),
+    );
 
     return addr;
   }
@@ -349,14 +361,19 @@ export class AppSyncWebSocket extends EventEmitter<EventMap & { end: [] }> {
   }
 
   subscribe(
-    { id, query, variables }: SubscriptionOptions,
+    { id, query, variables, headers }: SubscriptionOptions,
   ): Promise<AsyncIterableIterator<SubscriptionData>> {
     return this.waitForSubscription({
       type: SUBSCRIPTION_START,
       id: id ?? uuid.generate(),
       payload: {
         data: JSON.stringify({ query, variable: variables ?? {} }),
-        extensions: { authorization: this.buildHeaders() },
+        extensions: {
+          authorization: {
+            ...this.buildAuthHeaders(),
+            ...(headers ?? {}),
+          },
+        },
       },
     });
   }
